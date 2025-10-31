@@ -1,10 +1,13 @@
+# --- country_service.py (NEW ROBUST PARSER) ---
+
 import os
 import json
 import asyncio
-from groq import Groq, AsyncGroq
+from groq import AsyncGroq
 from pydantic import BaseModel, HttpUrl, ValidationError, TypeAdapter
-from typing import List, Coroutine, Any, Awaitable
+from typing import List, Coroutine, Any, Awaitable, Dict
 
+# --- Pydantic Models (Unchanged) ---
 class FintechStartup(BaseModel):
     name: str
     description: str
@@ -15,18 +18,21 @@ class CountryInfo(BaseModel):
     history: str
     fintech_startups: List[FintechStartup]
 
+# --- The "Brain" / Service Layer (Now with Groq) ---
 class CountryService:
     """
     This class contains the core business logic.
     It now uses the Groq API to get real data.
     """
+    
     def __init__(self):
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
             raise ValueError("GROQ_API_KEY environment variable not set.")
         
         self.client = AsyncGroq(api_key=api_key)
-        self.model_name = "llama-3.1-8b-instant"
+        # Using a model that supports JSON mode
+        self.model_name = "llama3-8b-8192" 
 
     async def _get_real_history(self, country: str) -> str:
         """Gets the real history of a country using the Groq API."""
@@ -43,11 +49,9 @@ class CountryService:
                 temperature=0.2,
             )
             
-            # --- FIX FOR ERROR 1 ---
             content = chat_completion.choices[0].message.content
             if content is None:
                 raise ValueError("API returned empty content for history")
-            # --- END FIX ---
 
             print("...History received.")
             return content
@@ -73,7 +77,7 @@ class CountryService:
         If you cannot find any data, return an empty array [].
         """
         
-        data_list = []
+        data_list: List[Dict[str, Any]] = []
         raw_text: str | None = None
         
         try:
@@ -90,18 +94,36 @@ class CountryService:
             if raw_text is None:
                 raise ValueError("API returned empty content for fintech")
             
-            data = json.loads(raw_text) 
+            data = json.loads(raw_text)
+            
+            # --- NEW ROBUST PARSING LOGIC ---
+            parsed_list: List[Dict[str, Any]] = []
             
             if isinstance(data, list):
-                data_list = data
+                # It's a list. Iterate and find valid items.
+                for item in data:
+                    if isinstance(item, list): # Handle the nested [{}, [list]] case
+                        for sub_item in item:
+                             if isinstance(sub_item, dict) and sub_item:
+                                parsed_list.append(sub_item)
+                    elif isinstance(item, dict) and item: # filter out empty {}
+                        parsed_list.append(item)
+            
             elif isinstance(data, dict):
+                # It's a dict. Find the first list inside it.
                 for key in data:
                     if isinstance(data[key], list):
-                        data_list = data[key]
-                        break
+                        for item in data[key]:
+                            if isinstance(item, dict) and item:
+                                parsed_list.append(item)
+                        break # Found the first list, stop
             
-            if not data_list and data:
-                print(f"AI returned JSON, but we couldn't find the list: {raw_text}")
+            data_list = parsed_list
+            # --- END NEW LOGIC ---
+
+            if not data_list:
+                print(f"AI returned JSON, but we couldn't parse a valid list: {raw_text}")
+                return []
 
             validated_startups: List[FintechStartup] = TypeAdapter(List[FintechStartup]).validate_python(data_list)
             
@@ -122,7 +144,7 @@ class CountryService:
 
     async def get_country_details(self, country_name: str) -> CountryInfo:
         """
-        This is the main public method. It is unchanged.
+        This is the main public method.
         """
         
         history_task = self._get_real_history(country_name)

@@ -1,31 +1,28 @@
+# --- main.py (FINAL v3) ---
+
 from fastapi import FastAPI, HTTPException, Response, Body, Request
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import os
 import uuid
-# import uvicorn
+import uvicorn
 import json
+
+# --- Import our "Brain" ---
 from app.country_service import CountryService, CountryInfo
 
-
+# --- FastAPI App ---
 app = FastAPI(
     title="Country Info A2A Agent",
     description="An AI agent that provides history and fintech info for countries.",
 )
 
-
+# --- Instantiate our "Brain" ---
 service = CountryService()
 
-class TaskRequestParams(BaseModel):
-    skill_id: str
-    input: Dict[str, Any]
 
-class JsonRpcRequest(BaseModel):
-    jsonrpc: str = "2.0"
-    method: str = "tasks/send"
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    params: TaskRequestParams
-
+# --- A2A/JSON-RPC Models ---
+# We STILL need these for our *response*
 class TaskResultPart(BaseModel):
     type: str = "application/json"
     content: Any
@@ -50,6 +47,7 @@ class JsonRpcErrorResponse(BaseModel):
     id: str
     error: JsonRpcError
 
+# --- A2A Agent Manifest (Unchanged) ---
 @app.get("/.well-known/agent.json")
 async def agent_manifest():
     base_url = os.getenv("AGENT_BASE_URL", "http://localhost:8000")
@@ -85,44 +83,41 @@ async def agent_manifest():
     return manifest
 
 
+# --- A2A Task Endpoint (NEW ROBUST VERSION) ---
 @app.post("/tasks/send", response_model=None)
 async def tasks_send(request: Request, response: Response):
-    """
-    This is the main "workshop" endpoint.
-    It now accepts a raw request to handle Telex's simple chat format.
-    """
     
     raw_body = {}
     request_id = "unknown"
     
     try:
         raw_body = await request.json()
-        
         print(f"--- TELEX REQUEST BODY ---")
         print(json.dumps(raw_body, indent=2))
         print(f"--------------------------")
-
+        
         request_id = raw_body.get("id", f"telex-{uuid.uuid4()}")
         
+        # --- NEW LOGIC TO FIND THE COUNTRY NAME ---
         country_name = None
+        params = raw_body.get("params", {})
         
-        if "params" in raw_body and isinstance(raw_body.get("params"), dict):
-            params = raw_body["params"]
-            if "input" in params and isinstance(params.get("input"), dict):
-                country_name = params["input"].get("country_name")
+        # Guess 1: Formal A2A format (from our curl test)
+        if "input" in params and isinstance(params.get("input"), dict):
+            country_name = params["input"].get("country_name")
 
-            if not country_name and "input" in params:
-                 if isinstance(params["input"], str):
-                    country_name = params["input"]
-
-            if not country_name:
-                country_name = params.get("prompt") or params.get("message")
-        
-        if not country_name:
-            country_name = raw_body.get("prompt") or raw_body.get("message")
+        # Guess 2: Telex Chat format (from your logs)
+        if not country_name and "message" in params and isinstance(params.get("message"), dict):
+            message = params["message"]
+            if "parts" in message and isinstance(message.get("parts"), list) and len(message["parts"]) > 0:
+                parts = message["parts"]
+                if "text" in parts[0] and parts[0].get("kind") == "text":
+                    country_name = parts[0]["text"]
 
         if not country_name:
-            raise ValueError("Could not find a 'country_name', 'prompt', or 'message' in the request body.")
+            raise ValueError("Could not find a 'country_name' or 'message.parts[0].text' in the request.")
+            
+        # --- END NEW LOGIC ---
             
         print(f"--- Extracted country: {country_name} ---")
         country_data: CountryInfo = await service.get_country_details(country_name)
@@ -155,6 +150,7 @@ async def tasks_send(request: Request, response: Response):
         return error_response
 
 
+# --- Simple root endpoint for testing (Unchanged) ---
 @app.get("/")
 def read_root():
     return {"message": "Country Info Agent is running. Visit '/.well-known/agent.json' for details."}
