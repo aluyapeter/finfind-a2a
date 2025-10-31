@@ -32,7 +32,7 @@ class CountryService:
             raise ValueError("GROQ_API_KEY environment variable not set.")
         
         self.client = AsyncGroq(api_key=api_key)
-        self.model_name = "llama3-70b-8192" # The correct, working model
+        self.model_name = "llama-3.1-8b-instant" # The correct, working model
 
     async def _get_real_history(self, country: str) -> str:
         """Gets the real history of a country using the Groq API."""
