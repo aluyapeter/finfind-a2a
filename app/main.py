@@ -141,7 +141,7 @@ async def tasks_send(request: Request, response: Response):
         )
         
         # 3. Return the successful chat response
-        return json_response
+        return message_result
 
     except Exception as e:
         print(f"--- ERROR IN /tasks/send ---")
