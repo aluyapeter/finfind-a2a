@@ -1,4 +1,4 @@
-# --- country_service.py (NEW ROBUST PARSER) ---
+# --- country_service.py (FINAL CHAT VERSION) ---
 
 import os
 import json
@@ -7,18 +7,19 @@ from groq import AsyncGroq
 from pydantic import BaseModel, HttpUrl, ValidationError, TypeAdapter
 from typing import List, Coroutine, Any, Awaitable, Dict
 
-# --- Pydantic Models (Unchanged) ---
+# --- Pydantic Models (Still needed for parsing) ---
 class FintechStartup(BaseModel):
     name: str
     description: str
     website: HttpUrl
 
+# This model is no longer used for the *final output*
 class CountryInfo(BaseModel):
     country_name: str
     history: str
     fintech_startups: List[FintechStartup]
 
-# --- The "Brain" / Service Layer (Now with Groq) ---
+# --- The "Brain" / Service Layer ---
 class CountryService:
     """
     This class contains the core business logic.
@@ -31,8 +32,7 @@ class CountryService:
             raise ValueError("GROQ_API_KEY environment variable not set.")
         
         self.client = AsyncGroq(api_key=api_key)
-        # Using a model that supports JSON mode
-        self.model_name = "llama-3.1-8b-instant" 
+        self.model_name = "llama3-70b-8192" # The correct, working model
 
     async def _get_real_history(self, country: str) -> str:
         """Gets the real history of a country using the Groq API."""
@@ -96,30 +96,27 @@ class CountryService:
             
             data = json.loads(raw_text)
             
-            # --- NEW ROBUST PARSING LOGIC ---
+            # --- Robust Parsing Logic ---
             parsed_list: List[Dict[str, Any]] = []
             
             if isinstance(data, list):
-                # It's a list. Iterate and find valid items.
                 for item in data:
-                    if isinstance(item, list): # Handle the nested [{}, [list]] case
+                    if isinstance(item, list):
                         for sub_item in item:
                              if isinstance(sub_item, dict) and sub_item:
                                 parsed_list.append(sub_item)
-                    elif isinstance(item, dict) and item: # filter out empty {}
+                    elif isinstance(item, dict) and item:
                         parsed_list.append(item)
             
             elif isinstance(data, dict):
-                # It's a dict. Find the first list inside it.
                 for key in data:
                     if isinstance(data[key], list):
                         for item in data[key]:
                             if isinstance(item, dict) and item:
                                 parsed_list.append(item)
-                        break # Found the first list, stop
+                        break
             
             data_list = parsed_list
-            # --- END NEW LOGIC ---
 
             if not data_list:
                 print(f"AI returned JSON, but we couldn't parse a valid list: {raw_text}")
@@ -130,21 +127,15 @@ class CountryService:
             print("...Fintech data received and parsed.")
             return validated_startups
 
-        except json.JSONDecodeError as e:
-            print(f"Error: Failed to decode JSON from AI response: {e}")
-            print(f"Raw response was: {raw_text}")
-            return []
-        except ValidationError as e:
-            print(f"Error: AI data failed Pydantic validation: {e}")
-            print(f"Raw data list was: {data_list}")
-            return []
         except Exception as e:
             print(f"An unknown error occurred getting fintech: {e}")
             return []
 
-    async def get_country_details(self, country_name: str) -> CountryInfo:
+    async def get_country_details(self, country_name: str) -> str:
         """
-        This is the main public method.
+        --- THIS IS THE MAJOR CHANGE ---
+        This method now returns a single, formatted string instead
+        of a CountryInfo object.
         """
         
         history_task = self._get_real_history(country_name)
@@ -152,10 +143,25 @@ class CountryService:
         
         history_data, fintech_data = await asyncio.gather(history_task, fintech_task)
         
-        country_info = CountryInfo(
-            country_name=country_name,
-            history=history_data,
-            fintech_startups=fintech_data
-        )
+        # --- Format the output as a Markdown string ---
         
-        return country_info
+        output_parts = []
+        output_parts.append(f"Here is the information you requested for **{country_name}**:\n")
+        output_parts.append("---")
+        
+        output_parts.append("### History")
+        output_parts.append(history_data)
+        output_parts.append("\n---\n")
+        
+        output_parts.append("### Top Fintech Startups")
+        if not fintech_data:
+            output_parts.append("No fintech data could be found.")
+        else:
+            for i, startup in enumerate(fintech_data):
+                output_parts.append(f"**{i+1}. {startup.name}**")
+                output_parts.append(f"   - *{startup.description}*")
+                output_parts.append(f"   - {startup.website}")
+        
+        return "\n".join(output_parts)
+
+# --- End of country_service.py ---

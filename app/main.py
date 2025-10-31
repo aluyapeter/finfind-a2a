@@ -1,4 +1,4 @@
-# --- main.py (FINAL v3) ---
+# --- main.py (FINAL CHAT VERSION) ---
 
 from fastapi import FastAPI, HTTPException, Response, Body, Request
 from pydantic import BaseModel, Field
@@ -9,7 +9,8 @@ import uvicorn
 import json
 
 # --- Import our "Brain" ---
-from app.country_service import CountryService, CountryInfo
+# We no longer import CountryInfo, as the service returns a string
+from app.country_service import CountryService
 
 # --- FastAPI App ---
 app = FastAPI(
@@ -21,29 +22,37 @@ app = FastAPI(
 service = CountryService()
 
 
-# --- A2A/JSON-RPC Models ---
-# We STILL need these for our *response*
-class TaskResultPart(BaseModel):
-    type: str = "application/json"
-    content: Any
+# --- NEW A2A/JSON-RPC Models (for Chat) ---
+# These models are designed to reply with a chat message,
+# which is what Telex is expecting.
 
-class TaskResult(BaseModel):
-    task_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    status: str = "completed"
-    parts: List[TaskResultPart]
+class ChatMessagePart(BaseModel):
+    kind: str = "text"
+    text: str
 
-class JsonRpcSuccessResponse(BaseModel):
+class ChatMessage(BaseModel):
+    role: str = "assistant"
+    parts: List[ChatMessagePart]
+    messageId: str = Field(default_factory=lambda: str(uuid.uuid4()))
+
+class MessageResult(BaseModel):
+    """The 'result' field, which contains the message."""
+    message: ChatMessage
+
+class ChatRpcResponse(BaseModel):
+    """The full, successful RPC response for a chat message."""
     jsonrpc: str = "2.0"
     id: str
-    result: TaskResult
+    result: MessageResult
 
+# --- Error models (unchanged) ---
 class JsonRpcError(BaseModel):
     code: int
     message: str
     data: Optional[Dict[str, Any]] = None
 
 class JsonRpcErrorResponse(BaseModel):
-    jsonrpc: str = "2.0"
+    jsonrpc: str = "2.cm"
     id: str
     error: JsonRpcError
 
@@ -83,7 +92,7 @@ async def agent_manifest():
     return manifest
 
 
-# --- A2A Task Endpoint (NEW ROBUST VERSION) ---
+# --- A2A Task Endpoint (NEW CHAT RESPONSE VERSION) ---
 @app.post("/tasks/send", response_model=None)
 async def tasks_send(request: Request, response: Response):
     
@@ -98,15 +107,13 @@ async def tasks_send(request: Request, response: Response):
         
         request_id = raw_body.get("id", f"telex-{uuid.uuid4()}")
         
-        # --- NEW LOGIC TO FIND THE COUNTRY NAME ---
+        # --- Robust logic to find the country name ---
         country_name = None
         params = raw_body.get("params", {})
         
-        # Guess 1: Formal A2A format (from our curl test)
         if "input" in params and isinstance(params.get("input"), dict):
             country_name = params["input"].get("country_name")
 
-        # Guess 2: Telex Chat format (from your logs)
         if not country_name and "message" in params and isinstance(params.get("message"), dict):
             message = params["message"]
             if "parts" in message and isinstance(message.get("parts"), list) and len(message["parts"]) > 0:
@@ -117,18 +124,23 @@ async def tasks_send(request: Request, response: Response):
         if not country_name:
             raise ValueError("Could not find a 'country_name' or 'message.parts[0].text' in the request.")
             
-        # --- END NEW LOGIC ---
-            
         print(f"--- Extracted country: {country_name} ---")
-        country_data: CountryInfo = await service.get_country_details(country_name)
         
-        result_part = TaskResultPart(content=country_data)
-        task_result = TaskResult(parts=[result_part])
+        # --- THIS IS THE NEW PART ---
+        # 1. Call our service, which now returns a formatted string
+        chat_response_string: str = await service.get_country_details(country_name)
         
-        json_response = JsonRpcSuccessResponse(
+        # 2. Build the new chat-focused response
+        response_part = ChatMessagePart(text=chat_response_string)
+        response_message = ChatMessage(parts=[response_part])
+        message_result = MessageResult(message=response_message)
+        
+        json_response = ChatRpcResponse(
             id=request_id,
-            result=task_result
+            result=message_result
         )
+        
+        # 3. Return the successful chat response
         return json_response
 
     except Exception as e:
@@ -154,7 +166,6 @@ async def tasks_send(request: Request, response: Response):
 @app.get("/")
 def read_root():
     return {"message": "Country Info Agent is running. Visit '/.well-known/agent.json' for details."}
-
 
 # --- To run this server: ---
 # In your terminal, run:
