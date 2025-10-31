@@ -1,4 +1,4 @@
-# --- country_service.py (FINAL PARSER v3) ---
+# --- country_service.py (FINAL PARSER v4) ---
 
 import os
 import json
@@ -54,6 +54,32 @@ class CountryService:
             print(f"Error getting history: {e}")
             return f"Error: Could not retrieve history for {country}."
 
+    # --- NEW HELPER FUNCTION ---
+    def _find_startup_list(self, data: Any) -> List[Dict[str, Any]]:
+        """Recursively searches a JSON structure for a list of valid startup dicts."""
+        parsed_list: List[Dict[str, Any]] = []
+
+        if isinstance(data, list):
+            # Base case 1: It's a list
+            for item in data:
+                if isinstance(item, dict) and "name" in item:
+                    parsed_list.append(item)
+                else:
+                    # Recurse into nested lists
+                    parsed_list.extend(self._find_startup_list(item))
+
+        elif isinstance(data, dict):
+            # Base case 2: It's a dict
+            if "name" in data and "description" in data:
+                 # It's an object-of-objects, this is one of the items
+                 parsed_list.append(data)
+            else:
+                # Recurse into the *values* of the dict
+                for key in data:
+                    parsed_list.extend(self._find_startup_list(data[key]))
+        
+        return parsed_list
+
     async def _get_real_fintech(self, country: str) -> List[FintechStartup]:
         """Gets real fintech data using the Groq API with JSON mode."""
         print(f"Getting fintech data for {country} (using Groq)...")
@@ -61,7 +87,7 @@ class CountryService:
         prompt = f"Find the top 5 current biggest or most influential fintech startups in {country}."
         system_prompt = """
         You are a financial data analyst. You must return your answer *only*
-        as a valid JSON array of objects. Do not add any other text.
+        as a valid JSON object or array. Do not add any other text.
         
         Each object in the array must have 3 keys:
         1. "name" (string): The startup's name.
@@ -71,8 +97,8 @@ class CountryService:
         If you cannot find any data, return an empty array [].
         """
         
-        data_list: List[Dict[str, Any]] = []
         raw_text: str | None = None
+        data_list: List[Dict[str, Any]] = []
         
         try:
             chat_completion = await self.client.chat.completions.create(
@@ -90,42 +116,12 @@ class CountryService:
             
             data = json.loads(raw_text)
             
-            # --- NEW ROBUST PARSING LOGIC (v3) ---
-            parsed_list: List[Dict[str, Any]] = []
-            
-            if isinstance(data, list):
-                # AI behaved: [ {...}, {...} ]
-                for item in data:
-                    if isinstance(item, list):
-                        for sub_item in item:
-                             if isinstance(sub_item, dict) and sub_item:
-                                parsed_list.append(sub_item)
-                    elif isinstance(item, dict) and item:
-                        parsed_list.append(item)
-            
-            elif isinstance(data, dict):
-                # AI sent an object. Check for nested list or object-of-objects
-                found_list = False
-                for key in data:
-                    if isinstance(data[key], list):
-                        # AI sent: { "startups": [ {...}, {...} ] }
-                        for item in data[key]:
-                            if isinstance(item, dict) and item:
-                                parsed_list.append(item)
-                        found_list = True
-                        break
-                
-                if not found_list:
-                    # AI sent: { "Flutterwave": {...}, "Kudi": {...} }
-                    for key in data:
-                        if isinstance(data[key], dict) and "name" in data[key]:
-                            parsed_list.append(data[key])
-            
-            data_list = parsed_list
+            # --- NEW ROBUST PARSING LOGIC (v4) ---
+            data_list = self._find_startup_list(data)
             # --- END NEW LOGIC ---
 
             if not data_list:
-                print(f"AI returned JSON, but we couldn't parse a valid list: {raw_text}")
+                print(f"AI returned JSON, but our parser couldn't find a valid list: {raw_text}")
                 return []
 
             validated_startups: List[FintechStartup] = TypeAdapter(List[FintechStartup]).validate_python(data_list)
