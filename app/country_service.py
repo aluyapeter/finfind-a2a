@@ -32,7 +32,7 @@ class CountryService:
         
         self.client = AsyncGroq(api_key=api_key)
         # Using a model that supports JSON mode
-        self.model_name = "llama3-8b-8192" 
+        self.model_name = "llama-3.1-8b-instant" 
 
     async def _get_real_history(self, country: str) -> str:
         """Gets the real history of a country using the Groq API."""
