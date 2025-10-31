@@ -1,4 +1,4 @@
-# --- country_service.py (FINAL CHAT VERSION) ---
+# --- country_service.py (FINAL PARSER v3) ---
 
 import os
 import json
@@ -7,17 +7,11 @@ from groq import AsyncGroq
 from pydantic import BaseModel, HttpUrl, ValidationError, TypeAdapter
 from typing import List, Coroutine, Any, Awaitable, Dict
 
-# --- Pydantic Models (Still needed for parsing) ---
+# --- Pydantic Models (Unchanged) ---
 class FintechStartup(BaseModel):
     name: str
     description: str
     website: HttpUrl
-
-# This model is no longer used for the *final output*
-class CountryInfo(BaseModel):
-    country_name: str
-    history: str
-    fintech_startups: List[FintechStartup]
 
 # --- The "Brain" / Service Layer ---
 class CountryService:
@@ -32,7 +26,7 @@ class CountryService:
             raise ValueError("GROQ_API_KEY environment variable not set.")
         
         self.client = AsyncGroq(api_key=api_key)
-        self.model_name = "llama-3.1-8b-instant" # The correct, working model
+        self.model_name = "llama3-70b-8192" # The correct, working model
 
     async def _get_real_history(self, country: str) -> str:
         """Gets the real history of a country using the Groq API."""
@@ -96,10 +90,11 @@ class CountryService:
             
             data = json.loads(raw_text)
             
-            # --- Robust Parsing Logic ---
+            # --- NEW ROBUST PARSING LOGIC (v3) ---
             parsed_list: List[Dict[str, Any]] = []
             
             if isinstance(data, list):
+                # AI behaved: [ {...}, {...} ]
                 for item in data:
                     if isinstance(item, list):
                         for sub_item in item:
@@ -109,14 +104,25 @@ class CountryService:
                         parsed_list.append(item)
             
             elif isinstance(data, dict):
+                # AI sent an object. Check for nested list or object-of-objects
+                found_list = False
                 for key in data:
                     if isinstance(data[key], list):
+                        # AI sent: { "startups": [ {...}, {...} ] }
                         for item in data[key]:
                             if isinstance(item, dict) and item:
                                 parsed_list.append(item)
+                        found_list = True
                         break
+                
+                if not found_list:
+                    # AI sent: { "Flutterwave": {...}, "Kudi": {...} }
+                    for key in data:
+                        if isinstance(data[key], dict) and "name" in data[key]:
+                            parsed_list.append(data[key])
             
             data_list = parsed_list
+            # --- END NEW LOGIC ---
 
             if not data_list:
                 print(f"AI returned JSON, but we couldn't parse a valid list: {raw_text}")
@@ -127,15 +133,21 @@ class CountryService:
             print("...Fintech data received and parsed.")
             return validated_startups
 
+        except json.JSONDecodeError as e:
+            print(f"Error: Failed to decode JSON from AI response: {e}")
+            print(f"Raw response was: {raw_text}")
+            return []
+        except ValidationError as e:
+            print(f"Error: AI data failed Pydantic validation: {e}")
+            print(f"Raw data list was: {data_list}")
+            return []
         except Exception as e:
             print(f"An unknown error occurred getting fintech: {e}")
             return []
 
     async def get_country_details(self, country_name: str) -> str:
         """
-        --- THIS IS THE MAJOR CHANGE ---
-        This method now returns a single, formatted string instead
-        of a CountryInfo object.
+        This is the main public method. It returns a formatted string.
         """
         
         history_task = self._get_real_history(country_name)
@@ -144,7 +156,6 @@ class CountryService:
         history_data, fintech_data = await asyncio.gather(history_task, fintech_task)
         
         # --- Format the output as a Markdown string ---
-        
         output_parts = []
         output_parts.append(f"Here is the information you requested for **{country_name}**:\n")
         output_parts.append("---")
@@ -163,5 +174,3 @@ class CountryService:
                 output_parts.append(f"   - {startup.website}")
         
         return "\n".join(output_parts)
-
-# --- End of country_service.py ---
