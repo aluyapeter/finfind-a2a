@@ -1,5 +1,4 @@
-# --- main.py (FINAL v13 - CORRECT ROLE) ---
-
+# --- main.py (FIXED v2 - Added debugging and verified structure) ---
 from fastapi import FastAPI, Response, Request, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
@@ -21,17 +20,14 @@ app = FastAPI(
 # --- Instantiate our "Brain" ---
 service = CountryService()
 
-
 # --- A2A/JSON-RPC Models (for sending a message) ---
 class ChatMessagePart(BaseModel):
     kind: str = "text"
     text: str
 
 class ChatMessage(BaseModel):
-    kind: str = "message"
-    # --- THIS IS THE FIX ---
-    role: str = "agent" # <-- Was "assistant", changed to "agent"
-    # --- END FIX ---
+    kind: str = "message"  # Must be "message"
+    role: str = "agent"
     parts: List[ChatMessagePart]
     messageId: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
@@ -43,8 +39,6 @@ class ChatRpcRequest(BaseModel):
     id: str
     method: str = "message/send"
     params: MessageParams
-# --- END NEW MODELS ---
-
 
 # --- Error models ---
 class JsonRpcError(BaseModel):
@@ -57,11 +51,11 @@ class JsonRpcErrorResponse(BaseModel):
     id: str
     error: JsonRpcError
 
-# --- BACKGROUND WORKER FUNCTION (Unchanged) ---
+# --- BACKGROUND WORKER FUNCTION ---
 async def process_and_send_response(
-    country_name: str, 
-    webhook_url: str, 
-    request_id: str, 
+    country_name: str,
+    webhook_url: str,
+    request_id: str,
     token: Optional[str] = None
 ):
     """
@@ -72,20 +66,28 @@ async def process_and_send_response(
     try:
         # 1. Call our service
         chat_response_string: str = await service.get_country_details(country_name)
-        
+
         # 2. Build the chat-focused request
-        response_part = ChatMessagePart(text=chat_response_string)
-        response_message = ChatMessage(parts=[response_part])
+        response_part = ChatMessagePart(kind="text", text=chat_response_string)
+        response_message = ChatMessage(
+            kind="message",
+            role="agent",
+            parts=[response_part]
+        )
         message_params = MessageParams(message=response_message)
-        
         json_request_to_telex = ChatRpcRequest(
             id=request_id,
+            method="message/send",
             params=message_params
         )
-        
+
+        # DEBUG: Print the exact JSON we're sending
+        request_json = json_request_to_telex.model_dump(mode='json')
+        print(f"--- BACKGROUND TASK: Request JSON structure ---")
+        print(json.dumps(request_json, indent=2))
+
         # 3. Build webhook headers
         webhook_headers = {"Content-Type": "application/json"}
-        
         if token:
             webhook_headers["Authorization"] = f"Bearer {token}"
             print(f"--- BACKGROUND TASK: Attaching 'token' to Authorization header ---")
@@ -95,13 +97,11 @@ async def process_and_send_response(
         # 4. Send the new request to the webhook
         async with httpx.AsyncClient() as client:
             print(f"--- BACKGROUND TASK: Sending new 'message/send' request to {webhook_url} ---")
-            
             webhook_response = await client.post(
                 webhook_url,
-                content=json_request_to_telex.model_dump_json(),
-                headers=webhook_headers 
+                json=request_json,  # Using json= instead of content= for proper serialization
+                headers=webhook_headers
             )
-            
             print(f"--- WEBHOOK RESPONSE STATUS: {webhook_response.status_code} ---")
             try:
                 print(f"--- WEBHOOK RESPONSE BODY: {webhook_response.json()} ---")
@@ -112,6 +112,9 @@ async def process_and_send_response(
 
     except Exception as e:
         print(f"--- BACKGROUND TASK ERROR: {str(e)} ---")
+        import traceback
+        print(traceback.format_exc())
+        
         error_response = JsonRpcErrorResponse(
             jsonrpc="2.0",
             id=request_id,
@@ -122,26 +125,23 @@ async def process_and_send_response(
                 webhook_headers = {"Content-Type": "application/json"}
                 if token:
                     webhook_headers["Authorization"] = f"Bearer {token}"
-                
                 await client.post(
                     webhook_url,
-                    content=error_response.model_dump_json(),
+                    json=error_response.model_dump(mode='json'),
                     headers=webhook_headers
                 )
         except Exception as e2:
             print(f"--- BACKGROUND TASK: Failed to send error to webhook: {str(e2)} ---")
 
-# --- A2A Agent Manifest (Unchanged) ---
+# --- A2A Agent Manifest ---
 @app.get("/.well-known/agent.json")
 async def agent_manifest():
     base_url = os.getenv("AGENT_BASE_URL", "http://localhost:8000")
-    
     manifest = {
         "name": "CountryInfoAgent",
         "description": "An AI agent that provides history and top fintech startups for a specific country.",
         "url": base_url,
         "version": "1.0.0",
-        
         "skills": [
             {
                 "id": "get_country_details",
@@ -159,34 +159,31 @@ async def agent_manifest():
                 }
             }
         ],
-        
         "endpoints": {
-            "task_send": f"{base_url}/tasks/send" 
+            "task_send": f"{base_url}/tasks/send"
         }
     }
     return manifest
 
-
-# --- A2A Task Endpoint (Unchanged) ---
-@app.post("/tasks/send", response_model=None) 
+# --- A2A Task Endpoint ---
+@app.post("/tasks/send", response_model=None)
 async def tasks_send(request: Request, background_tasks: BackgroundTasks):
-    
     raw_body = {}
     request_id = "unknown"
-    
     try:
         raw_body = await request.json()
-        print(f"--- TELEX REQUEST BODY (WEBHOOK) ---")
+        print(f"--- INCOMING TELEX REQUEST ---")
+        print(json.dumps(raw_body, indent=2))
         
         request_id = raw_body.get("id", f"telex-{uuid.uuid4()}")
-        
+
         # --- Extract country name ---
         country_name_raw = None
         params = raw_body.get("params", {})
         
         if "input" in params and isinstance(params.get("input"), dict):
             country_name_raw = params["input"].get("country_name")
-
+        
         if not country_name_raw and "message" in params and isinstance(params.get("message"), dict):
             message = params["message"]
             if "parts" in message and isinstance(message.get("parts"), list) and len(message["parts"]) > 0:
@@ -196,15 +193,13 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
         
         if not country_name_raw:
             raise ValueError("Could not find a 'country_name' or 'message.parts[0].text' in the request.")
-            
+        
         country_name = country_name_raw.split()[0]
-            
         print(f"--- Extracted country: {country_name} (from: {country_name_raw}) ---")
 
         # --- Extract webhook config ---
         webhook_url = None
         token = None
-        
         if "configuration" in params and "pushNotificationConfig" in params["configuration"]:
             config = params["configuration"]["pushNotificationConfig"]
             webhook_url = config.get("url")
@@ -221,26 +216,26 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
 
         # --- Pass the token to the background task ---
         background_tasks.add_task(
-            process_and_send_response, 
-            country_name, 
-            webhook_url, 
+            process_and_send_response,
+            country_name,
+            webhook_url,
             request_id,
             token=token
         )
-        
+
         # --- Immediately return 200 OK ---
         return Response(status_code=200)
 
     except Exception as e:
         print(f"--- ERROR IN /tasks_send (sync part) ---")
         print(f"Error: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
         print(f"--- Failing request body was: ---")
         print(json.dumps(raw_body, indent=2))
-        
         return Response(status_code=500, content=f"Failed to process request: {str(e)}")
 
-
-# --- Simple root endpoint for testing (Unchanged) ---
+# --- Simple root endpoint for testing ---
 @app.get("/")
 def read_root():
     return {"message": "Country Info Agent is running. Visit '/.well-known/agent.json' for details."}
