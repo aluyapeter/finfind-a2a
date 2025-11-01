@@ -181,21 +181,43 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
         country_name_raw = None
         params = raw_body.get("params", {})
         
+        # Try method 1: Look for input.country_name
         if "input" in params and isinstance(params.get("input"), dict):
             country_name_raw = params["input"].get("country_name")
         
+        # Try method 2: Look in message.parts for text
         if not country_name_raw and "message" in params and isinstance(params.get("message"), dict):
             message = params["message"]
-            if "parts" in message and isinstance(message.get("parts"), list) and len(message["parts"]) > 0:
-                parts = message["parts"]
-                if "text" in parts[0] and parts[0].get("kind") == "text":
-                    country_name_raw = parts[0]["text"]
+            if "parts" in message and isinstance(message.get("parts"), list):
+                # Look through all parts for the first text that looks like a country name
+                for part in message["parts"]:
+                    if part.get("kind") == "text" and "text" in part:
+                        text = part["text"].strip()
+                        # Skip HTML tags, long instructions, and error messages
+                        if (text and 
+                            not text.startswith("<") and 
+                            not text.startswith("\n") and
+                            "Sorry" not in text and
+                            "You are a" not in text and
+                            len(text) < 100):  # Country names are short
+                            country_name_raw = text
+                            break
         
         if not country_name_raw:
-            raise ValueError("Could not find a 'country_name' or 'message.parts[0].text' in the request.")
+            print(f"--- ERROR: Could not extract country name from request ---")
+            print(f"--- Available params keys: {list(params.keys())} ---")
+            if "message" in params:
+                print(f"--- Message parts: {params['message'].get('parts', [])[:3]} ---")  # First 3 parts only
+            raise ValueError("Could not find a country name in the request.")
         
-        country_name = country_name_raw.split()[0]
-        print(f"--- Extracted country: {country_name} (from: {country_name_raw}) ---")
+        # Extract just the country name (first word)
+        country_name = country_name_raw.split()[0] if " " in country_name_raw else country_name_raw
+        # Remove any HTML tags if present
+        if "<" in country_name:
+            import re
+            country_name = re.sub(r'<[^>]+>', '', country_name).strip()
+        
+        print(f"--- Extracted country: '{country_name}' (from: '{country_name_raw}') ---")
 
         # --- Extract webhook config ---
         webhook_url = None
