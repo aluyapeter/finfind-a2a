@@ -1,4 +1,4 @@
-# --- main.py (FINAL v12 - CORRECT RESPONSE STRUCTURE) ---
+# --- main.py (FINAL v13 - CORRECT ROLE) ---
 
 from fastapi import FastAPI, Response, Request, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -22,26 +22,25 @@ app = FastAPI(
 service = CountryService()
 
 
-# --- NEW A2A/JSON-RPC Models (for sending a message) ---
-# This is the structure Telex expects us to send TO its webhook
+# --- A2A/JSON-RPC Models (for sending a message) ---
 class ChatMessagePart(BaseModel):
     kind: str = "text"
     text: str
 
 class ChatMessage(BaseModel):
-    role: str = "assistant"
+    # --- THIS IS THE FIX ---
+    role: str = "agent" # <-- Was "assistant", changed to "agent"
+    # --- END FIX ---
     parts: List[ChatMessagePart]
     messageId: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
 class MessageParams(BaseModel):
-    """The 'params' block for our request TO Telex."""
     message: ChatMessage
 
 class ChatRpcRequest(BaseModel):
-    """The full JSON-RPC request we send TO Telex."""
     jsonrpc: str = "2.0"
     id: str
-    method: str = "message/send" # <--- This matches the error!
+    method: str = "message/send"
     params: MessageParams
 # --- END NEW MODELS ---
 
@@ -57,12 +56,12 @@ class JsonRpcErrorResponse(BaseModel):
     id: str
     error: JsonRpcError
 
-# --- BACKGROUND WORKER FUNCTION (Updated) ---
+# --- BACKGROUND WORKER FUNCTION (Unchanged) ---
 async def process_and_send_response(
     country_name: str, 
     webhook_url: str, 
-    request_id: str, # We use this for the ID of our *new* request
-    token: Optional[str] = None 
+    request_id: str, 
+    token: Optional[str] = None
 ):
     """
     This function runs in the background.
@@ -73,13 +72,13 @@ async def process_and_send_response(
         # 1. Call our service
         chat_response_string: str = await service.get_country_details(country_name)
         
-        # 2. Build the NEW chat-focused REQUEST
+        # 2. Build the chat-focused request
         response_part = ChatMessagePart(text=chat_response_string)
         response_message = ChatMessage(parts=[response_part])
         message_params = MessageParams(message=response_message)
         
         json_request_to_telex = ChatRpcRequest(
-            id=request_id, # Use the same ID
+            id=request_id,
             params=message_params
         )
         
@@ -98,7 +97,7 @@ async def process_and_send_response(
             
             webhook_response = await client.post(
                 webhook_url,
-                content=json_request_to_telex.model_dump_json(), # Send the new request
+                content=json_request_to_telex.model_dump_json(),
                 headers=webhook_headers 
             )
             
@@ -112,7 +111,6 @@ async def process_and_send_response(
 
     except Exception as e:
         print(f"--- BACKGROUND TASK ERROR: {str(e)} ---")
-        # (Error handling... unchanged)
         error_response = JsonRpcErrorResponse(
             jsonrpc="2.0",
             id=request_id,
@@ -168,7 +166,7 @@ async def agent_manifest():
     return manifest
 
 
-# --- A2A Task Endpoint (Updated) ---
+# --- A2A Task Endpoint (Unchanged) ---
 @app.post("/tasks/send", response_model=None) 
 async def tasks_send(request: Request, background_tasks: BackgroundTasks):
     
@@ -209,7 +207,7 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
         if "configuration" in params and "pushNotificationConfig" in params["configuration"]:
             config = params["configuration"]["pushNotificationConfig"]
             webhook_url = config.get("url")
-            token = config.get("token") # <-- 3. Get the TOKEN from the body
+            token = config.get("token")
         
         if not webhook_url:
             raise ValueError("No pushNotificationConfig.url found in request.")
@@ -220,7 +218,7 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
         print(f"--- Webhook URL: {webhook_url} ---")
         print(f"--- Token Found: {'Yes' if token else 'No'} ---")
 
-        # --- 4. Pass the token to the background task ---
+        # --- Pass the token to the background task ---
         background_tasks.add_task(
             process_and_send_response, 
             country_name, 
