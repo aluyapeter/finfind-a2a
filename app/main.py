@@ -1,4 +1,4 @@
-# --- main.py (FINAL v10 - CORRECT TOKEN EXTRACTION) ---
+# --- main.py (FINAL v11 - CORRECT URL AND TOKEN) ---
 
 from fastapi import FastAPI, Response, Request, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -108,6 +108,7 @@ async def process_and_send_response(
 
     except Exception as e:
         print(f"--- BACKGROUND TASK ERROR: {str(e)} ---")
+        # (Error handling... unchanged)
         error_response = JsonRpcErrorResponse(
             jsonrpc="2.0",
             id=request_id,
@@ -157,14 +158,16 @@ async def agent_manifest():
         ],
         
         "endpoints": {
-            "task_send": f"{base_url}/tasks_send" # <-- Corrected typo from /tasks/send just in case
+            # --- FIX: Back to the correct URL ---
+            "task_send": f"{base_url}/tasks/send" 
         }
     }
     return manifest
 
 
 # --- A2A Task Endpoint (Updated) ---
-@app.post("/tasks_send", response_model=None) # <-- Corrected typo from /tasks/send
+# --- FIX: Back to the correct URL ---
+@app.post("/tasks/send", response_model=None) 
 async def tasks_send(request: Request, background_tasks: BackgroundTasks):
     
     raw_body = {}
