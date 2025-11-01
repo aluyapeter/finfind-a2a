@@ -1,4 +1,4 @@
-# --- main.py (FINAL WEBHOOK v2 - WITH LOGGING) ---
+# --- main.py (FINAL v5 - WITH AUTH) ---
 
 from fastapi import FastAPI, Response, Request, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -7,7 +7,7 @@ import os
 import uuid
 import uvicorn
 import json
-import httpx # <--- NEW IMPORT
+import httpx
 
 # --- Import our "Brain" ---
 from app.country_service import CountryService
@@ -51,8 +51,13 @@ class JsonRpcErrorResponse(BaseModel):
     id: str
     error: JsonRpcError
 
-# --- NEW BACKGROUND WORKER FUNCTION ---
-async def process_and_send_response(country_name: str, webhook_url: str, request_id: str):
+# --- BACKGROUND WORKER FUNCTION (Updated) ---
+async def process_and_send_response(
+    country_name: str, 
+    webhook_url: str, 
+    request_id: str, 
+    auth_header: Optional[str] = None # <-- 1. Receive Auth header
+):
     """
     This function runs in the background.
     It calls the AI, builds the response, and POSTs it to the Telex webhook.
@@ -72,30 +77,35 @@ async def process_and_send_response(country_name: str, webhook_url: str, request
             result=message_result
         )
         
-        # 3. Send the response to the webhook
+        # 3. Build webhook headers
+        webhook_headers = {"Content-Type": "application/json"}
+        if auth_header:
+            webhook_headers["Authorization"] = auth_header # <-- 2. Add auth header if it exists
+            print(f"--- BACKGROUND TASK: Attaching auth header ---")
+        else:
+            print(f"--- BACKGROUND TASK: No auth header found to attach ---")
+
+        # 4. Send the response to the webhook
         async with httpx.AsyncClient() as client:
             print(f"--- BACKGROUND TASK: Sending response to {webhook_url} ---")
             
-            # We use .model_dump_json() to send the raw JSON string
             webhook_response = await client.post(
                 webhook_url,
                 content=json_response.model_dump_json(),
-                headers={"Content-Type": "application/json"}
+                headers=webhook_headers # <-- 3. Use the new headers
             )
             
-            # --- NEW DEBUGGING LOGS ---
             print(f"--- WEBHOOK RESPONSE STATUS: {webhook_response.status_code} ---")
             try:
                 print(f"--- WEBHOOK RESPONSE BODY: {webhook_response.json()} ---")
             except Exception:
                 print(f"--- WEBHOOK RESPONSE BODY (text): {webhook_response.text} ---")
-            # --- END NEW DEBUGGING LOGS ---
 
         print(f"--- BACKGROUND TASK: Complete ---")
 
     except Exception as e:
         print(f"--- BACKGROUND TASK ERROR: {str(e)} ---")
-        # (Error handling code... unchanged)
+        # (Error handling... unchanged)
         error_response = JsonRpcErrorResponse(
             jsonrpc="2.0",
             id=request_id,
@@ -103,10 +113,14 @@ async def process_and_send_response(country_name: str, webhook_url: str, request
         )
         try:
             async with httpx.AsyncClient() as client:
+                webhook_headers = {"Content-Type": "application/json"}
+                if auth_header:
+                    webhook_headers["Authorization"] = auth_header
+                
                 await client.post(
                     webhook_url,
                     content=error_response.model_dump_json(),
-                    headers={"Content-Type": "application/json"}
+                    headers=webhook_headers
                 )
         except Exception as e2:
             print(f"--- BACKGROUND TASK: Failed to send error to webhook: {str(e2)} ---")
@@ -147,7 +161,7 @@ async def agent_manifest():
     return manifest
 
 
-# --- A2A Task Endpoint (WEBHOOK VERSION - Unchanged) ---
+# --- A2A Task Endpoint (Updated) ---
 @app.post("/tasks/send", response_model=None)
 async def tasks_send(request: Request, background_tasks: BackgroundTasks):
     
@@ -157,6 +171,9 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
     try:
         raw_body = await request.json()
         print(f"--- TELEX REQUEST BODY (WEBHOOK) ---")
+        
+        # --- 4. Capture the incoming Authorization header ---
+        auth_header = request.headers.get("Authorization")
         
         request_id = raw_body.get("id", f"telex-{uuid.uuid4()}")
         
@@ -191,8 +208,14 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
         
         print(f"--- Webhook URL: {webhook_url} ---")
 
-        # --- Add task to background ---
-        background_tasks.add_task(process_and_send_response, country_name, webhook_url, request_id)
+        # --- 5. Pass the auth_header to the background task ---
+        background_tasks.add_task(
+            process_and_send_response, 
+            country_name, 
+            webhook_url, 
+            request_id,
+            auth_header=auth_header
+        )
         
         # --- Immediately return 200 OK ---
         return Response(status_code=200)
