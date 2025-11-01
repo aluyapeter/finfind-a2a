@@ -1,4 +1,4 @@
-# --- main.py (FINAL WEBHOOK VERSION) ---
+# --- main.py (FINAL WEBHOOK v2 - WITH LOGGING) ---
 
 from fastapi import FastAPI, Response, Request, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -75,17 +75,27 @@ async def process_and_send_response(country_name: str, webhook_url: str, request
         # 3. Send the response to the webhook
         async with httpx.AsyncClient() as client:
             print(f"--- BACKGROUND TASK: Sending response to {webhook_url} ---")
+            
             # We use .model_dump_json() to send the raw JSON string
-            await client.post(
+            webhook_response = await client.post(
                 webhook_url,
                 content=json_response.model_dump_json(),
                 headers={"Content-Type": "application/json"}
             )
+            
+            # --- NEW DEBUGGING LOGS ---
+            print(f"--- WEBHOOK RESPONSE STATUS: {webhook_response.status_code} ---")
+            try:
+                print(f"--- WEBHOOK RESPONSE BODY: {webhook_response.json()} ---")
+            except Exception:
+                print(f"--- WEBHOOK RESPONSE BODY (text): {webhook_response.text} ---")
+            # --- END NEW DEBUGGING LOGS ---
+
         print(f"--- BACKGROUND TASK: Complete ---")
 
     except Exception as e:
         print(f"--- BACKGROUND TASK ERROR: {str(e)} ---")
-        # Try to send an error message back to the webhook
+        # (Error handling code... unchanged)
         error_response = JsonRpcErrorResponse(
             jsonrpc="2.0",
             id=request_id,
@@ -137,9 +147,9 @@ async def agent_manifest():
     return manifest
 
 
-# --- A2A Task Endpoint (NEW WEBHOOK VERSION) ---
+# --- A2A Task Endpoint (WEBHOOK VERSION - Unchanged) ---
 @app.post("/tasks/send", response_model=None)
-async def tasks_send(request: Request, background_tasks: BackgroundTasks): # <--- Added BackgroundTasks
+async def tasks_send(request: Request, background_tasks: BackgroundTasks):
     
     raw_body = {}
     request_id = "unknown"
@@ -185,7 +195,6 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks): # <--
         background_tasks.add_task(process_and_send_response, country_name, webhook_url, request_id)
         
         # --- Immediately return 200 OK ---
-        # This tells Telex "Task accepted"
         return Response(status_code=200)
 
     except Exception as e:
