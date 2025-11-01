@@ -245,8 +245,33 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
             token=token
         )
 
-        # --- Immediately return 200 OK ---
-        return Response(status_code=200)
+        # --- Return a proper JSON-RPC response with Task status ---
+        task_response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "kind": "task",
+                "id": request_id,
+                "status": {
+                    "state": "working",
+                    "message": {
+                        "kind": "message",
+                        "role": "agent",
+                        "parts": [{
+                            "kind": "text",
+                            "text": f"Fetching information about {country_name}... This will take a moment."
+                        }],
+                        "messageId": str(uuid.uuid4())
+                    }
+                }
+            }
+        }
+        
+        return Response(
+            status_code=200,
+            content=json.dumps(task_response),
+            media_type="application/json"
+        )
 
     except Exception as e:
         print(f"--- ERROR IN /tasks_send (sync part) ---")
