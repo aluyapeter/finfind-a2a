@@ -1,4 +1,3 @@
-# --- main.py (FINAL - Simplified) ---
 from fastapi import FastAPI, Response, Request, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
@@ -16,7 +15,6 @@ app = FastAPI(
 
 service = CountryService()
 
-# --- Models ---
 class ChatMessagePart(BaseModel):
     kind: str = "text"
     text: str
@@ -45,10 +43,8 @@ async def process_and_send_response(
 ):
     print(f"--- BACKGROUND TASK: Processing for {country_name} ---")
     try:
-        # Get the data
         chat_response_string: str = await service.get_country_details(country_name)
-        
-        # Build response
+    
         response_message = ChatMessage(
             kind="message",
             role="agent",
@@ -125,15 +121,12 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
         
         print(f"--- Received request {request_id} ---")
         
-        # Extract country name
         country_name_raw = None
         params = raw_body.get("params", {})
-        
-        # Try input.country_name first
+
         if "input" in params and isinstance(params.get("input"), dict):
             country_name_raw = params["input"].get("country_name")
         
-        # Try message.parts
         if not country_name_raw and "message" in params:
             message = params.get("message", {})
             parts = message.get("parts", [])
@@ -154,7 +147,6 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
         if not country_name_raw:
             raise ValueError("Could not find country name in request")
         
-        # Clean up country name
         country_name = country_name_raw.split()[0]
         if "<" in country_name:
             import re
@@ -162,19 +154,16 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
         
         print(f"--- Country: {country_name} ---")
         
-        # Get webhook config
         config_obj = params.get("configuration", {})
         push_config = config_obj.get("pushNotificationConfig", {})
         webhook_url = push_config.get("url")
         token = push_config.get("token")
         
-        # FORCE BLOCKING MODE - ignore what Telex sends
         blocking = True
         
         print(f"--- FORCED Blocking mode: {blocking} ---")
         print(f"--- Webhook URL: {webhook_url} ---")
         
-        # Process synchronously and return result directly
         print(f"--- BLOCKING MODE: Processing synchronously ---")
         chat_response = await service.get_country_details(country_name)
         

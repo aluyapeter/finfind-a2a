@@ -1,4 +1,3 @@
-# --- country_service.py (FIXED - Better JSON parsing) ---
 import os
 import json
 import asyncio
@@ -6,13 +5,11 @@ from groq import AsyncGroq
 from pydantic import BaseModel, HttpUrl, ValidationError, TypeAdapter
 from typing import List, Dict, Any
 
-# --- Pydantic Models ---
 class FintechStartup(BaseModel):
     name: str
     description: str
     website: HttpUrl
 
-# --- The "Brain" / Service Layer ---
 class CountryService:
     """
     This class contains the core business logic.
@@ -77,12 +74,11 @@ class CountryService:
         """
         Converts various JSON formats into a list of startup dicts.
         """
-        # First try to flatten and find valid objects
+        # flatten and find valid objects
         flattened = self._flatten_and_clean(data)
         if flattened:
             return flattened
-        
-        # Fallback: Check if it's the "parallel arrays" format
+
         if isinstance(data, dict) and all(isinstance(v, list) for v in data.values()):
             names = data.get('name', [])
             descriptions = data.get('description', [])
@@ -169,7 +165,6 @@ Return an empty array [] if no data is found. Do not add any other text."""
         fintech_task = self._get_real_fintech(country_name)
         history_data, fintech_data = await asyncio.gather(history_task, fintech_task)
 
-        # --- Format the output as a Markdown string ---
         output_parts = []
         output_parts.append(f"Here is the information you requested for **{country_name}**:\n")
         output_parts.append("---")
