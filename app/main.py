@@ -1,4 +1,4 @@
-# --- main.py (FINAL v6 - LOG ALL HEADERS) ---
+# --- main.py (FINAL v7 - CORRECT AUTH) ---
 
 from fastapi import FastAPI, Response, Request, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -51,12 +51,12 @@ class JsonRpcErrorResponse(BaseModel):
     id: str
     error: JsonRpcError
 
-# --- BACKGROUND WORKER FUNCTION (Unchanged) ---
+# --- BACKGROUND WORKER FUNCTION (Updated) ---
 async def process_and_send_response(
     country_name: str, 
     webhook_url: str, 
     request_id: str, 
-    auth_header: Optional[str] = None
+    auth_data: Optional[Dict[str, Any]] = None # <-- 1. Receive Auth DICT
 ):
     """
     This function runs in the background.
@@ -79,11 +79,21 @@ async def process_and_send_response(
         
         # 3. Build webhook headers
         webhook_headers = {"Content-Type": "application/json"}
-        if auth_header:
-            webhook_headers["Authorization"] = auth_header 
-            print(f"--- BACKGROUND TASK: Attaching auth header ---")
+        
+        # --- 2. Build auth header from the auth_data DICT ---
+        if auth_data and "credentials" in auth_data and auth_data.get("schemes") == ["TelexApiKey"]:
+            # This is a common pattern for Mastra/Telex
+            token = auth_data["credentials"]
+            webhook_headers["Authorization"] = f"Bearer {token}"
+            print(f"--- BACKGROUND TASK: Attaching TelexApiKey auth header ---")
+        elif auth_data and "token" in auth_data:
+            # A guess at a simpler format
+            token = auth_data["token"]
+            webhook_headers["Authorization"] = f"Bearer {token}"
+            print(f"--- BACKGROUND TASK: Attaching 'token' auth header ---")
         else:
-            print(f"--- BACKGROUND TASK: No 'Authorization' header found to attach ---")
+            print(f"--- BACKGROUND TASK: No valid auth credentials found in auth_data dict ---")
+        # --- END NEW LOGIC ---
 
         # 4. Send the response to the webhook
         async with httpx.AsyncClient() as client:
@@ -114,8 +124,9 @@ async def process_and_send_response(
         try:
             async with httpx.AsyncClient() as client:
                 webhook_headers = {"Content-Type": "application/json"}
-                if auth_header:
-                    webhook_headers["Authorization"] = auth_header
+                if auth_data and "credentials" in auth_data and auth_data.get("schemes") == ["TelexApiKey"]:
+                    token = auth_data["credentials"]
+                    webhook_headers["Authorization"] = f"Bearer {token}"
                 
                 await client.post(
                     webhook_url,
@@ -171,14 +182,7 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
     try:
         raw_body = await request.json()
         print(f"--- TELEX REQUEST BODY (WEBHOOK) ---")
-        
-        # --- NEW DEBUGGING LOG: PRINT ALL HEADERS ---
-        print("--- INCOMING HEADERS ---")
-        print(f"{request.headers}")
-        print("------------------------")
-        
-        # --- 4. Capture the incoming Authorization header ---
-        auth_header = request.headers.get("Authorization")
+        print(json.dumps(raw_body, indent=2)) # Full log of body
         
         request_id = raw_body.get("id", f"telex-{uuid.uuid4()}")
         
@@ -203,23 +207,28 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
             
         print(f"--- Extracted country: {country_name} (from: {country_name_raw}) ---")
 
-        # --- Extract webhook URL ---
+        # --- Extract webhook config ---
         webhook_url = None
+        auth_data = None
+        
         if "configuration" in params and "pushNotificationConfig" in params["configuration"]:
-            webhook_url = params["configuration"]["pushNotificationConfig"].get("url")
+            config = params["configuration"]["pushNotificationConfig"]
+            webhook_url = config.get("url")
+            auth_data = config.get("authentication") # <-- 3. Get the auth DICT
         
         if not webhook_url:
             raise ValueError("No pushNotificationConfig.url found in request.")
         
         print(f"--- Webhook URL: {webhook_url} ---")
+        print(f"--- Auth Data: {auth_data} ---")
 
-        # --- 5. Pass the auth_header to the background task ---
+        # --- 4. Pass the auth_data to the background task ---
         background_tasks.add_task(
             process_and_send_response, 
             country_name, 
             webhook_url, 
             request_id,
-            auth_header=auth_header
+            auth_data=auth_data
         )
         
         # --- Immediately return 200 OK ---
