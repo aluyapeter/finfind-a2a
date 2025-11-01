@@ -166,9 +166,32 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
         config = params.get("configuration", {}).get("pushNotificationConfig", {})
         webhook_url = config.get("url")
         token = config.get("token")
+        blocking = config.get("blocking", False)
         
+        print(f"--- Blocking mode: {blocking} ---")
+        
+        # If blocking mode, wait for result before responding
+        if blocking:
+            print(f"--- BLOCKING MODE: Processing synchronously ---")
+            chat_response = await service.get_country_details(country_name)
+            
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "kind": "message",
+                    "role": "agent",
+                    "parts": [{
+                        "kind": "text",
+                        "text": chat_response
+                    }],
+                    "messageId": str(uuid.uuid4())
+                }
+            }
+        
+        # Non-blocking mode: use webhook
         if not webhook_url:
-            raise ValueError("No webhook URL provided")
+            raise ValueError("No webhook URL provided for non-blocking mode")
         
         # Start background task
         background_tasks.add_task(
