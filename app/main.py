@@ -28,6 +28,7 @@ class ChatMessagePart(BaseModel):
     text: str
 
 class ChatMessage(BaseModel):
+    kind: str = "message"
     # --- THIS IS THE FIX ---
     role: str = "agent" # <-- Was "assistant", changed to "agent"
     # --- END FIX ---
