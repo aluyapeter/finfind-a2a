@@ -47,37 +47,55 @@ class CountryService:
             print(f"Error getting history: {e}")
             return f"Error: Could not retrieve history for {country}."
 
+    def _flatten_and_clean(self, data: Any) -> List[Dict[str, Any]]:
+        """
+        Recursively flattens nested structures and filters valid startup objects.
+        """
+        result = []
+        
+        if isinstance(data, dict):
+            # Check if this dict is a valid startup
+            if 'name' in data and 'description' in data and 'website' in data:
+                result.append(data)
+            else:
+                # Recurse into dict values
+                for value in data.values():
+                    result.extend(self._flatten_and_clean(value))
+        
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and 'name' in item and 'description' in item and 'website' in item:
+                    # Valid startup object
+                    result.append(item)
+                elif isinstance(item, (list, dict)):
+                    # Recurse into nested structures
+                    result.extend(self._flatten_and_clean(item))
+        
+        return result
+    
     def _normalize_startup_data(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Converts various JSON formats into a list of startup dicts.
-        Handles cases where AI returns {name: [..], description: [..], website: [..]}
         """
-        # Case 1: Already a list of objects
-        if isinstance(data, list):
-            return data
+        # First try to flatten and find valid objects
+        flattened = self._flatten_and_clean(data)
+        if flattened:
+            return flattened
         
-        # Case 2: Object with arrays for each field
-        if isinstance(data, dict):
-            # Check if it's the "parallel arrays" format
-            if all(isinstance(v, list) for v in data.values()):
-                names = data.get('name', [])
-                descriptions = data.get('description', [])
-                websites = data.get('website', [])
-                
-                # Combine parallel arrays into objects
-                result = []
-                for i in range(min(len(names), len(descriptions), len(websites))):
-                    result.append({
-                        'name': names[i],
-                        'description': descriptions[i],
-                        'website': websites[i]
-                    })
-                return result
+        # Fallback: Check if it's the "parallel arrays" format
+        if isinstance(data, dict) and all(isinstance(v, list) for v in data.values()):
+            names = data.get('name', [])
+            descriptions = data.get('description', [])
+            websites = data.get('website', [])
             
-            # Check if it's nested (e.g., {"startups": [...]})
-            for value in data.values():
-                if isinstance(value, list):
-                    return value
+            result = []
+            for i in range(min(len(names), len(descriptions), len(websites))):
+                result.append({
+                    'name': names[i],
+                    'description': descriptions[i],
+                    'website': websites[i]
+                })
+            return result
         
         return []
 

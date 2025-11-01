@@ -163,46 +163,21 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
         print(f"--- Country: {country_name} ---")
         
         # Get webhook config
-        config = params.get("configuration", {}).get("pushNotificationConfig", {})
-        webhook_url = config.get("url")
-        token = config.get("token")
-        blocking = config.get("blocking", False)
+        config_obj = params.get("configuration", {})
+        push_config = config_obj.get("pushNotificationConfig", {})
+        webhook_url = push_config.get("url")
+        token = push_config.get("token")
         
-        print(f"--- Blocking mode: {blocking} ---")
+        # FORCE BLOCKING MODE - ignore what Telex sends
+        blocking = True
         
-        # If blocking mode, wait for result before responding
-        if blocking:
-            print(f"--- BLOCKING MODE: Processing synchronously ---")
-            chat_response = await service.get_country_details(country_name)
-            
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "kind": "message",
-                    "role": "agent",
-                    "parts": [{
-                        "kind": "text",
-                        "text": chat_response
-                    }],
-                    "messageId": str(uuid.uuid4())
-                }
-            }
+        print(f"--- FORCED Blocking mode: {blocking} ---")
+        print(f"--- Webhook URL: {webhook_url} ---")
         
-        # Non-blocking mode: use webhook
-        if not webhook_url:
-            raise ValueError("No webhook URL provided for non-blocking mode")
+        # Process synchronously and return result directly
+        print(f"--- BLOCKING MODE: Processing synchronously ---")
+        chat_response = await service.get_country_details(country_name)
         
-        # Start background task
-        background_tasks.add_task(
-            process_and_send_response,
-            country_name,
-            webhook_url,
-            request_id,
-            token
-        )
-        
-        # Return immediate acknowledgment with message
         return {
             "jsonrpc": "2.0",
             "id": request_id,
@@ -211,7 +186,7 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
                 "role": "agent",
                 "parts": [{
                     "kind": "text",
-                    "text": f"🔍 Looking up information about {country_name}..."
+                    "text": chat_response
                 }],
                 "messageId": str(uuid.uuid4())
             }
