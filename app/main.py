@@ -1,4 +1,4 @@
-# --- main.py (FINAL v5 - WITH AUTH) ---
+# --- main.py (FINAL v6 - LOG ALL HEADERS) ---
 
 from fastapi import FastAPI, Response, Request, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -51,12 +51,12 @@ class JsonRpcErrorResponse(BaseModel):
     id: str
     error: JsonRpcError
 
-# --- BACKGROUND WORKER FUNCTION (Updated) ---
+# --- BACKGROUND WORKER FUNCTION (Unchanged) ---
 async def process_and_send_response(
     country_name: str, 
     webhook_url: str, 
     request_id: str, 
-    auth_header: Optional[str] = None # <-- 1. Receive Auth header
+    auth_header: Optional[str] = None
 ):
     """
     This function runs in the background.
@@ -80,10 +80,10 @@ async def process_and_send_response(
         # 3. Build webhook headers
         webhook_headers = {"Content-Type": "application/json"}
         if auth_header:
-            webhook_headers["Authorization"] = auth_header # <-- 2. Add auth header if it exists
+            webhook_headers["Authorization"] = auth_header 
             print(f"--- BACKGROUND TASK: Attaching auth header ---")
         else:
-            print(f"--- BACKGROUND TASK: No auth header found to attach ---")
+            print(f"--- BACKGROUND TASK: No 'Authorization' header found to attach ---")
 
         # 4. Send the response to the webhook
         async with httpx.AsyncClient() as client:
@@ -92,7 +92,7 @@ async def process_and_send_response(
             webhook_response = await client.post(
                 webhook_url,
                 content=json_response.model_dump_json(),
-                headers=webhook_headers # <-- 3. Use the new headers
+                headers=webhook_headers 
             )
             
             print(f"--- WEBHOOK RESPONSE STATUS: {webhook_response.status_code} ---")
@@ -171,6 +171,11 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
     try:
         raw_body = await request.json()
         print(f"--- TELEX REQUEST BODY (WEBHOOK) ---")
+        
+        # --- NEW DEBUGGING LOG: PRINT ALL HEADERS ---
+        print("--- INCOMING HEADERS ---")
+        print(f"{request.headers}")
+        print("------------------------")
         
         # --- 4. Capture the incoming Authorization header ---
         auth_header = request.headers.get("Authorization")
