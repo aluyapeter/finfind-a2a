@@ -1,4 +1,4 @@
-# --- main.py (FINAL v11 - CORRECT URL AND TOKEN) ---
+# --- main.py (FINAL v12 - CORRECT RESPONSE STRUCTURE) ---
 
 from fastapi import FastAPI, Response, Request, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -22,7 +22,8 @@ app = FastAPI(
 service = CountryService()
 
 
-# --- A2A/JSON-RPC Models (for Chat) ---
+# --- NEW A2A/JSON-RPC Models (for sending a message) ---
+# This is the structure Telex expects us to send TO its webhook
 class ChatMessagePart(BaseModel):
     kind: str = "text"
     text: str
@@ -32,13 +33,18 @@ class ChatMessage(BaseModel):
     parts: List[ChatMessagePart]
     messageId: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
-class MessageResult(BaseModel):
+class MessageParams(BaseModel):
+    """The 'params' block for our request TO Telex."""
     message: ChatMessage
 
-class ChatRpcResponse(BaseModel):
+class ChatRpcRequest(BaseModel):
+    """The full JSON-RPC request we send TO Telex."""
     jsonrpc: str = "2.0"
     id: str
-    result: MessageResult
+    method: str = "message/send" # <--- This matches the error!
+    params: MessageParams
+# --- END NEW MODELS ---
+
 
 # --- Error models ---
 class JsonRpcError(BaseModel):
@@ -55,8 +61,8 @@ class JsonRpcErrorResponse(BaseModel):
 async def process_and_send_response(
     country_name: str, 
     webhook_url: str, 
-    request_id: str, 
-    token: Optional[str] = None # <-- 1. Receive the token string
+    request_id: str, # We use this for the ID of our *new* request
+    token: Optional[str] = None 
 ):
     """
     This function runs in the background.
@@ -67,34 +73,32 @@ async def process_and_send_response(
         # 1. Call our service
         chat_response_string: str = await service.get_country_details(country_name)
         
-        # 2. Build the chat-focused response
+        # 2. Build the NEW chat-focused REQUEST
         response_part = ChatMessagePart(text=chat_response_string)
         response_message = ChatMessage(parts=[response_part])
-        message_result = MessageResult(message=response_message)
+        message_params = MessageParams(message=response_message)
         
-        json_response = ChatRpcResponse(
-            id=request_id,
-            result=message_result
+        json_request_to_telex = ChatRpcRequest(
+            id=request_id, # Use the same ID
+            params=message_params
         )
         
         # 3. Build webhook headers
         webhook_headers = {"Content-Type": "application/json"}
         
-        # --- 2. Build auth header from the token ---
         if token:
             webhook_headers["Authorization"] = f"Bearer {token}"
             print(f"--- BACKGROUND TASK: Attaching 'token' to Authorization header ---")
         else:
             print(f"--- BACKGROUND TASK: No 'token' was passed. This will cause a 401. ---")
-        # --- END NEW LOGIC ---
 
-        # 4. Send the response to the webhook
+        # 4. Send the new request to the webhook
         async with httpx.AsyncClient() as client:
-            print(f"--- BACKGROUND TASK: Sending response to {webhook_url} ---")
+            print(f"--- BACKGROUND TASK: Sending new 'message/send' request to {webhook_url} ---")
             
             webhook_response = await client.post(
                 webhook_url,
-                content=json_response.model_dump_json(),
+                content=json_request_to_telex.model_dump_json(), # Send the new request
                 headers=webhook_headers 
             )
             
@@ -158,7 +162,6 @@ async def agent_manifest():
         ],
         
         "endpoints": {
-            # --- FIX: Back to the correct URL ---
             "task_send": f"{base_url}/tasks/send" 
         }
     }
@@ -166,7 +169,6 @@ async def agent_manifest():
 
 
 # --- A2A Task Endpoint (Updated) ---
-# --- FIX: Back to the correct URL ---
 @app.post("/tasks/send", response_model=None) 
 async def tasks_send(request: Request, background_tasks: BackgroundTasks):
     
@@ -202,7 +204,7 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
 
         # --- Extract webhook config ---
         webhook_url = None
-        token = None # <-- We will find the token now
+        token = None
         
         if "configuration" in params and "pushNotificationConfig" in params["configuration"]:
             config = params["configuration"]["pushNotificationConfig"]
