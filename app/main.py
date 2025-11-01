@@ -1,12 +1,13 @@
-# --- main.py (FINAL v4) ---
+# --- main.py (FINAL WEBHOOK VERSION) ---
 
-from fastapi import FastAPI, HTTPException, Response, Body, Request
+from fastapi import FastAPI, Response, Request, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import os
 import uuid
 import uvicorn
 import json
+import httpx # <--- NEW IMPORT
 
 # --- Import our "Brain" ---
 from app.country_service import CountryService
@@ -39,7 +40,7 @@ class ChatRpcResponse(BaseModel):
     id: str
     result: MessageResult
 
-# --- Error models (unchanged) ---
+# --- Error models ---
 class JsonRpcError(BaseModel):
     code: int
     message: str
@@ -49,6 +50,56 @@ class JsonRpcErrorResponse(BaseModel):
     jsonrpc: str = "2.0"
     id: str
     error: JsonRpcError
+
+# --- NEW BACKGROUND WORKER FUNCTION ---
+async def process_and_send_response(country_name: str, webhook_url: str, request_id: str):
+    """
+    This function runs in the background.
+    It calls the AI, builds the response, and POSTs it to the Telex webhook.
+    """
+    print(f"--- BACKGROUND TASK: Processing for {country_name} ---")
+    try:
+        # 1. Call our service
+        chat_response_string: str = await service.get_country_details(country_name)
+        
+        # 2. Build the chat-focused response
+        response_part = ChatMessagePart(text=chat_response_string)
+        response_message = ChatMessage(parts=[response_part])
+        message_result = MessageResult(message=response_message)
+        
+        json_response = ChatRpcResponse(
+            id=request_id,
+            result=message_result
+        )
+        
+        # 3. Send the response to the webhook
+        async with httpx.AsyncClient() as client:
+            print(f"--- BACKGROUND TASK: Sending response to {webhook_url} ---")
+            # We use .model_dump_json() to send the raw JSON string
+            await client.post(
+                webhook_url,
+                content=json_response.model_dump_json(),
+                headers={"Content-Type": "application/json"}
+            )
+        print(f"--- BACKGROUND TASK: Complete ---")
+
+    except Exception as e:
+        print(f"--- BACKGROUND TASK ERROR: {str(e)} ---")
+        # Try to send an error message back to the webhook
+        error_response = JsonRpcErrorResponse(
+            jsonrpc="2.0",
+            id=request_id,
+            error=JsonRpcError(code=-32000, message=f"An error occurred: {str(e)}")
+        )
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    webhook_url,
+                    content=error_response.model_dump_json(),
+                    headers={"Content-Type": "application/json"}
+                )
+        except Exception as e2:
+            print(f"--- BACKGROUND TASK: Failed to send error to webhook: {str(e2)} ---")
 
 # --- A2A Agent Manifest (Unchanged) ---
 @app.get("/.well-known/agent.json")
@@ -86,22 +137,20 @@ async def agent_manifest():
     return manifest
 
 
-# --- A2A Task Endpoint (FINAL FIX) ---
+# --- A2A Task Endpoint (NEW WEBHOOK VERSION) ---
 @app.post("/tasks/send", response_model=None)
-async def tasks_send(request: Request, response: Response):
+async def tasks_send(request: Request, background_tasks: BackgroundTasks): # <--- Added BackgroundTasks
     
     raw_body = {}
     request_id = "unknown"
     
     try:
         raw_body = await request.json()
-        print(f"--- TELEX REQUEST BODY ---")
-        print(json.dumps(raw_body, indent=2))
-        print(f"--------------------------")
+        print(f"--- TELEX REQUEST BODY (WEBHOOK) ---")
         
         request_id = raw_body.get("id", f"telex-{uuid.uuid4()}")
         
-        # --- Robust logic to find the country name ---
+        # --- Extract country name ---
         country_name_raw = None
         params = raw_body.get("params", {})
         
@@ -114,51 +163,38 @@ async def tasks_send(request: Request, response: Response):
                 parts = message["parts"]
                 if "text" in parts[0] and parts[0].get("kind") == "text":
                     country_name_raw = parts[0]["text"]
-
+        
         if not country_name_raw:
             raise ValueError("Could not find a 'country_name' or 'message.parts[0].text' in the request.")
             
-        # --- BUG FIX 1: Clean the input ---
-        # Take only the first word to avoid confusing the AI
         country_name = country_name_raw.split()[0]
-        # --- END BUG FIX 1 ---
             
         print(f"--- Extracted country: {country_name} (from: {country_name_raw}) ---")
+
+        # --- Extract webhook URL ---
+        webhook_url = None
+        if "configuration" in params and "pushNotificationConfig" in params["configuration"]:
+            webhook_url = params["configuration"]["pushNotificationConfig"].get("url")
         
-        # 1. Call our service
-        chat_response_string: str = await service.get_country_details(country_name)
+        if not webhook_url:
+            raise ValueError("No pushNotificationConfig.url found in request.")
         
-        # 2. Build the chat-focused response
-        response_part = ChatMessagePart(text=chat_response_string)
-        response_message = ChatMessage(parts=[response_part])
-        message_result = MessageResult(message=response_message)
+        print(f"--- Webhook URL: {webhook_url} ---")
+
+        # --- Add task to background ---
+        background_tasks.add_task(process_and_send_response, country_name, webhook_url, request_id)
         
-        json_response = ChatRpcResponse(
-            id=request_id,
-            result=message_result
-        )
-        
-        # --- BUG FIX 2: Return the valid JSON-RPC response ---
-        return json_response
-        # --- END BUG FIX 2 ---
+        # --- Immediately return 200 OK ---
+        # This tells Telex "Task accepted"
+        return Response(status_code=200)
 
     except Exception as e:
-        print(f"--- ERROR IN /tasks/send ---")
+        print(f"--- ERROR IN /tasks/send (sync part) ---")
         print(f"Error: {str(e)}")
         print(f"--- Failing request body was: ---")
         print(json.dumps(raw_body, indent=2))
-        print(f"------------------------------")
         
-        error_response = JsonRpcErrorResponse(
-            jsonrpc="2.0",
-            id=request_id,
-            error=JsonRpcError(
-                code=-32000,
-                message=f"An error occurred: {str(e)}",
-            )
-        )
-        response.status_code = 500
-        return error_response
+        return Response(status_code=500, content=f"Failed to process request: {str(e)}")
 
 
 # --- Simple root endpoint for testing (Unchanged) ---
