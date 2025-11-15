@@ -198,22 +198,3 @@ async def tasks_send(request: Request, background_tasks: BackgroundTasks):
 @app.get("/")
 def read_root():
     return {"message": "Country Info Agent is running"}
-# --- To run this server: ---
-# In your terminal, run:
-#    AGENT_BASE_URL="http://localhost:8000" uvicorn main:app --reload
-#
-#    Use this curl command in your terminal to test:
-#
-#    curl -X POST "http://localhost:8000/tasks/send" \
-#    -H "Content-Type: application/json" \
-#    -d '{
-#        "jsonrpc": "2.0",
-#        "method": "tasks/send",
-#        "id": "12345",
-#        "params": {
-#            "skill_id": "get_country_details",
-#            "input": {
-#                "country_name": "Nigeria"
-#            }
-#        }
-#    }'
